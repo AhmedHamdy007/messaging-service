@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const { pool, query } = require("../db/pool");
+const { encodeMessageBody, decodeMessageBody } = require("../utils/messageEncoding");
 
 function rowToMessage(row) {
   if (!row) return null;
@@ -9,7 +10,7 @@ function rowToMessage(row) {
     senderUserId: row.sender_user_id,
     senderDisplayName: row.sender_display_name,
     senderUserRole: row.sender_user_role,
-    body: row.body,
+    body: decodeMessageBody(row.body),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     editedAt: row.edited_at,
@@ -54,7 +55,7 @@ async function appendMessageToConversation({ conversationId, senderUserId, body 
       `INSERT INTO messages (id, conversation_id, sender_user_id, body)
        VALUES ($1, $2, $3, $4)
        RETURNING *`,
-      [crypto.randomUUID(), conversationId, senderUserId, body]
+      [crypto.randomUUID(), conversationId, senderUserId, encodeMessageBody(body)]
     );
     const message = messageInsert.rows[0];
 
@@ -105,7 +106,7 @@ async function updateMessageBodyById(messageId, body) {
          updated_at = NOW()
      WHERE id = $2
      RETURNING id`,
-    [body, messageId]
+    [encodeMessageBody(body), messageId]
   );
   if (!result.rows[0]) return null;
   return findMessageById(result.rows[0].id);

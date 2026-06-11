@@ -47,7 +47,23 @@ function conversationTypeMatchesRoles(conversationType, roleA, roleB) {
   if (conversationType === "owner_stylist") {
     return roles === ["owner", "stylist"].sort().join(":");
   }
+  if (conversationType === "customer_owner") {
+    return roles === ["customer", "owner"].sort().join(":");
+  }
   return false;
+}
+
+function inferConversationType({ initiatorRole, targetRole, recipientType }) {
+  if (recipientType === "salon" && [initiatorRole, targetRole].sort().join(":") === "customer:owner") {
+    return "customer_owner";
+  }
+  if ([initiatorRole, targetRole].sort().join(":") === "customer:stylist") {
+    return "customer_stylist";
+  }
+  if ([initiatorRole, targetRole].sort().join(":") === "owner:stylist") {
+    return "owner_stylist";
+  }
+  return null;
 }
 
 async function resolveTargetUser(req, targetUserId) {
@@ -83,6 +99,45 @@ async function listParticipantUserIds(conversationId) {
   return participants.map((participant) => participant.userId);
 }
 
+async function enrichParticipantsWithProfiles(req, participants) {
+  return Promise.all(
+    participants.map(async (participant) => {
+      try {
+        const upstream = await getUserById({
+          userId: participant.userId,
+          authorization: req.headers.authorization || "",
+          requestId: req.id,
+        });
+        const profile = upstream.status === 200 ? upstream.body?.data : null;
+        const avatarUrl = profile?.avatar?.url || profile?.profileImageUrl || null;
+
+        return {
+          ...participant,
+          id: participant.userId,
+          name: profile?.name || participant.displayName,
+          role: profile?.role || participant.userRole,
+          avatar: avatarUrl,
+          profileImageUrl: avatarUrl,
+        };
+      } catch (error) {
+        req.logger?.warn("Unable to enrich conversation participant", {
+          request_id: req.id,
+          user_id: participant.userId,
+          error: error.message,
+        });
+        return {
+          ...participant,
+          id: participant.userId,
+          name: participant.displayName,
+          role: participant.userRole,
+          avatar: null,
+          profileImageUrl: null,
+        };
+      }
+    })
+  );
+}
+
 function toIsoString(value) {
   if (!value) return new Date().toISOString();
   const date = value instanceof Date ? value : new Date(value);
@@ -95,14 +150,6 @@ function recipientIdForParticipants(participantUserIds, senderId) {
 
 async function publishMessageSentEvent(req, message, recipientId) {
   if (!message || !recipientId) return;
-  if (!process.env.RABBITMQ_URL) {
-    req.logger?.warn("RabbitMQ URL missing; skipping event publish", {
-      request_id: req.id,
-      routing_key: MESSAGING_MESSAGE_SENT,
-    });
-    return;
-  }
-
   try {
     await publish(MESSAGING_MESSAGE_SENT, {
       messageId: message.id,
@@ -207,7 +254,13 @@ router.post("/conversations", requireAuth, async (req, res, next) => {
       });
     }
 
-    if (!conversationTypeMatchesRoles(payload.conversationType, req.user.role, targetUser.role)) {
+    const conversationType = payload.conversationType || inferConversationType({
+      initiatorRole: req.user.role,
+      targetRole: targetUser.role,
+      recipientType: payload.recipientType,
+    });
+
+    if (!conversationType || !conversationTypeMatchesRoles(conversationType, req.user.role, targetUser.role)) {
       return res.status(403).json({
         success: false,
         error: "Conversation type is not allowed for these participants",
@@ -216,7 +269,7 @@ router.post("/conversations", requireAuth, async (req, res, next) => {
     }
 
     const context = await getMessagingContext({
-      conversationType: payload.conversationType,
+      conversationType,
       initiatorUserId: req.user.id,
       initiatorRole: req.user.role,
       targetUserId: targetUser.id,
@@ -243,14 +296,14 @@ router.post("/conversations", requireAuth, async (req, res, next) => {
     }
 
     const conversationKey = buildConversationKey({
-      conversationType: payload.conversationType,
+      conversationType,
       shopId: context.body?.data?.shopId || null,
       participantUserIds: [req.user.id, targetUser.id],
     });
 
     const createResult = await createConversationWithParticipants({
       conversationKey,
-      conversationType: payload.conversationType,
+      conversationType,
       shopId: context.body?.data?.shopId || null,
       createdByUserId: req.user.id,
       participants: [
@@ -279,6 +332,7 @@ router.post("/conversations", requireAuth, async (req, res, next) => {
 
     const conversation = await getConversationSummaryForUser(createResult.conversation.id, req.user.id);
     const participants = await listParticipantsByConversationId(createResult.conversation.id);
+    const enrichedParticipants = await enrichParticipantsWithProfiles(req, participants);
     const participantUserIds = participants.map((participant) => participant.userId);
 
     const emittedMessage = createResult.message
@@ -309,7 +363,8 @@ router.post("/conversations", requireAuth, async (req, res, next) => {
       success: true,
       data: {
         ...conversation,
-        participants,
+        conversationId: createResult.conversation.id,
+        participants: enrichedParticipants,
       },
       request_id: req.id,
     });
@@ -325,12 +380,14 @@ router.get("/conversations/:conversationId", requireAuth, async (req, res, next)
 
     const conversation = await getConversationSummaryForUser(membership.id, req.user.id);
     const participants = await listParticipantsByConversationId(membership.id);
+    const enrichedParticipants = await enrichParticipantsWithProfiles(req, participants);
 
     return res.json({
       success: true,
       data: {
         ...conversation,
-        participants,
+        conversationId: conversation.id,
+        participants: enrichedParticipants,
       },
       request_id: req.id,
     });

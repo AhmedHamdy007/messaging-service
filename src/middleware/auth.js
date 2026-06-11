@@ -62,7 +62,11 @@ function requireAuth(req, res, next) {
       });
     }
 
-    req.user = user;
+    req.user = {
+      ...user,
+      id: user.id || req.auth.sub,
+      role: req.auth.role || null,
+    };
     return next();
   })().catch(() =>
     res.status(503).json({

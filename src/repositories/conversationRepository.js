@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const { pool, query } = require("../db/pool");
+const { encodeMessageBody, decodeMessageBody } = require("../utils/messageEncoding");
 
 function rowToConversation(row) {
   if (!row) return null;
@@ -28,7 +29,7 @@ function rowToConversation(row) {
         ? null
         : {
             id: row.last_message_id,
-            body: row.last_message_body,
+            body: decodeMessageBody(row.last_message_body),
             senderUserId: row.last_message_sender_user_id,
             createdAt: row.last_message_created_at,
           },
@@ -211,7 +212,7 @@ async function createConversationWithParticipants({
         `INSERT INTO messages (id, conversation_id, sender_user_id, body)
          VALUES ($1, $2, $3, $4)
          RETURNING *`,
-        [crypto.randomUUID(), conversation.id, createdByUserId, initialMessage]
+        [crypto.randomUUID(), conversation.id, createdByUserId, encodeMessageBody(initialMessage)]
       );
       createdMessage = messageInsert.rows[0];
 
