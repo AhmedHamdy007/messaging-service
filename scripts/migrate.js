@@ -7,7 +7,7 @@ const { Pool } = require("pg");
 
 const migrationsDir = path.join(__dirname, "..", "migrations");
 const connectionString =
-  process.env.DATABASE_URL;
+  process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/messaging_db";
 
 function getDatabaseName(urlString) {
   const parsed = new URL(urlString);
@@ -18,6 +18,10 @@ function withDatabase(urlString, databaseName) {
   const parsed = new URL(urlString);
   parsed.pathname = `/${databaseName}`;
   return parsed.toString();
+}
+
+function quoteIdentifier(identifier) {
+  return `"${identifier.replace(/"/g, '""')}"`;
 }
 
 async function ensureDatabaseExists() {
@@ -35,7 +39,7 @@ async function ensureDatabaseExists() {
     if (result.rowCount > 0) return;
 
     console.log(`Creating database ${databaseName} ...`);
-    await adminPool.query(`CREATE DATABASE \"${databaseName.replace(/\"/g, '\"\"')}\"`);
+    await adminPool.query(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     console.log(`Created database ${databaseName}`);
   } finally {
     await adminPool.end();
@@ -46,6 +50,8 @@ async function run() {
   const pool = new Pool({ connectionString });
   let client;
   let poolClosed = false;
+  let inTransaction = false;
+  let currentMigration = null;
 
   try {
     client = await pool.connect();
@@ -72,12 +78,15 @@ async function run() {
         continue;
       }
 
+      currentMigration = filename;
       console.log(`Applying ${filename} ...`);
       const sql = fs.readFileSync(path.join(migrationsDir, filename), "utf8");
       await client.query("BEGIN");
+      inTransaction = true;
       await client.query(sql);
       await client.query("INSERT INTO _migrations (filename) VALUES ($1)", [filename]);
       await client.query("COMMIT");
+      inTransaction = false;
       console.log(`Applied ${filename}`);
     }
 
@@ -89,10 +98,13 @@ async function run() {
       poolClosed = true;
       return run();
     }
-    if (client) {
+    if (client && inTransaction) {
       await client.query("ROLLBACK");
     }
-    console.error("Migration failed:", error.message);
+    console.error(
+      `Migration failed${currentMigration ? ` in ${currentMigration}` : ""}:`,
+      error.message
+    );
     process.exitCode = 1;
   } finally {
     if (client) {

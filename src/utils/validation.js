@@ -6,7 +6,7 @@ class ValidationError extends Error {
   }
 }
 
-const CONVERSATION_TYPES = ["customer_stylist", "owner_stylist", "customer_owner"];
+const CONVERSATION_TYPES = ["customer_stylist", "owner_stylist", "customer_owner", "stylist_stylist"];
 const RECIPIENT_TYPES = ["stylist", "salon"];
 
 function validateOptionalString(name, value, { maxLength = 255 } = {}) {
@@ -65,16 +65,24 @@ function validateListLimit(rawValue, { defaultValue = 20, max = 100 } = {}) {
 }
 
 function normalizeCreateConversationPayload(body) {
-  const recipientId = validateOptionalString("recipientId", body.recipientId, { maxLength: 120 });
+  const recipientId =
+    body.recipientId === undefined || body.recipientId === null || body.recipientId === ""
+      ? null
+      : validateIdentifier("recipientId", body.recipientId, { maxLength: 120 });
   const recipientType = validateOptionalString("recipientType", body.recipientType, { maxLength: 40 });
 
   if (recipientType && !RECIPIENT_TYPES.includes(recipientType.toLowerCase())) {
     throw new ValidationError(`recipientType must be one of: ${RECIPIENT_TYPES.join(", ")}`, "recipientType");
   }
 
+  const targetUserId =
+    body.targetUserId === undefined || body.targetUserId === null || body.targetUserId === ""
+      ? recipientId
+      : body.targetUserId;
+
   return {
     conversationType: body.conversationType ? validateConversationType(body.conversationType) : null,
-    targetUserId: validateIdentifier("targetUserId", body.targetUserId || recipientId, { maxLength: 120 }),
+    targetUserId: validateIdentifier("targetUserId", targetUserId, { maxLength: 120 }),
     recipientType: recipientType ? recipientType.toLowerCase() : null,
     initialMessage: validateOptionalString("initialMessage", body.initialMessage, { maxLength: 4000 }),
   };
